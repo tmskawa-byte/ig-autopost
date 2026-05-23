@@ -1,0 +1,65 @@
+name: IG Auto Post
+
+on:
+  schedule:
+    # 09:00 JST = 00:00 UTC (UTC has no DST in Japan; this is stable year-round)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run pipeline but skip IG publish (true/false)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      topic:
+        description: "Force topic id (e.g. topic_3); leave blank for random"
+        required: false
+        default: ""
+
+concurrency:
+  group: ig-autopost
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run auto_post
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          CHATLLM_API_KEY: ${{ secrets.CHATLLM_API_KEY }}
+          IMGBB_API_KEY: ${{ secrets.IMGBB_API_KEY }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID }}
+          LOG_LEVEL: INFO
+        run: |
+          args=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            args="$args --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.topic }}" ]; then
+            args="$args --topic ${{ github.event.inputs.topic }}"
+          fi
+          echo "Running: python auto_post.py $args"
+          python auto_post.py $args
