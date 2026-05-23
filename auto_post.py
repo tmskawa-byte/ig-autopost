@@ -16,10 +16,10 @@ Env vars required:
     IG_ACCESS_TOKEN, IG_BUSINESS_ID
 
 CLI flags:
-    --dry-run        Do everything except the final IG publish.
-    --topic TOPIC_ID Force a specific topic (e.g. topic_3).
-    --subtopic NAME  Force a specific subtopic string (must exist in topic).
-    --seed N         Deterministic random selection (for testing).
+    --dry-run         Do everything except the final IG publish.
+    --topic TOPIC_ID  Force a specific topic (e.g. topic_3).
+    --subtopic NAME   Force a specific subtopic string (must exist in topic).
+    --seed N          Deterministic random selection (for testing).
 """
 from __future__ import annotations
 
@@ -56,7 +56,6 @@ from prompts.stage2_caption import (
     STAGE2_SYSTEM_PROMPT,
     build_stage2_user_input,
 )
-
 
 LOG = logging.getLogger("auto_post")
 
@@ -172,7 +171,7 @@ def main() -> int:
     else:
         subtopic = pick_subtopic(topic_id, rng)
 
-    LOG.info("Topic:    %s (%s)", topic_id, topic_name(topic_id))
+    LOG.info("Topic: %s (%s)", topic_id, topic_name(topic_id))
     LOG.info("Subtopic: %s", subtopic)
 
     # ----- 2. Tavily search -----
@@ -183,7 +182,7 @@ def main() -> int:
         articles = tavily.search(
             query=query,
             topic="news",
-            max_results=5,
+            max_results=10,
             days=365,
             include_domains=JP_MEDIA_DOMAINS,
         )
