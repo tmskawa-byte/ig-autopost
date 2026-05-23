@@ -13,41 +13,33 @@ import random
 from typing import Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
-# Japanese media + government / industry sources for Tavily include_domains.
-# Curated for accuracy, recency, and automotive relevance.
+# Japanese automotive media domains for Tavily include_domains.
+# Strictly limited to automotive specialty media + 1 industry paper.
+# General news papers (NHK, Asahi, Mainichi, Yomiuri, Jiji, Sankei, Kyodo)
+# are intentionally excluded — they were pulling in COVID/politics/medical
+# noise that caused Stage 1 SKIP on all auto-specific subtopics.
 # ---------------------------------------------------------------------------
 JP_MEDIA_DOMAINS: List[str] = [
-    # automotive specialty
     "response.jp",
     "car.watch.impress.co.jp",
+    "motor-fan.jp",
+    "kuruma-news.jp",
     "carview.yahoo.co.jp",
     "autocar.jp",
-    "motor-fan.jp",
+    "webcg.net",
     "bestcarweb.jp",
-    "car-me.jp",
-    "web.motor-magazine.co.jp",
-    "as-web.jp",
-    "automesseweb.jp",
-    "kuruma-news.jp",
+    "carsensor.net",
+    "gazoo.com",
+    "carwatch.impress.co.jp",
     "minkara.carview.co.jp",
-    "forride.jp",
-    # general news (national papers + broadcasters)
-    "nhk.or.jp",
-    "asahi.com",
-    "mainichi.jp",
-    "yomiuri.co.jp",
+    "creative311.com",
+    "as-web.jp",
+    "young-machine.com",
+    "carcle.jp",
+    "ja.wikipedia.org",
     "nikkei.com",
-    "jiji.com",
-    "sankei.com",
-    "kyodonews.jp",
-    # government / industry bodies
-    "mlit.go.jp",        # 国土交通省 — リコール、標識など公式情報
-    "npa.go.jp",         # 警察庁 — 道交法
-    "jaf.or.jp",         # JAF
-    "sonpo.or.jp",       # 日本損害保険協会
-    "nasva.go.jp",       # 自動車事故対策機構
+    "nikkan.co.jp",
 ]
-
 
 # ---------------------------------------------------------------------------
 # Topics
