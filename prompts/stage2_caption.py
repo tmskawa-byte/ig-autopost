@@ -189,15 +189,31 @@ area.
 """
 
 
-def build_stage2_user_input(research_memo: str, topic_id: str, subtopic: str) -> str:
+def build_stage2_user_input(
+    research_memo: str,
+    topic_id: str,
+    subtopic: str,
+    recent_posts_block: str = "",
+) -> str:
     """
     Compose the user message for Stage 2. We pass topic context alongside the
     research memo so the LLM can pick suitable hashtags + image subject.
+
+    Pattern D: 直近の IG 投稿サブトピック一覧 (recent_posts_block) を
+    user message の冒頭に注入することで、AI 自身に「これと意味的に被らない
+    角度で書け」と判断させる（subtopic 文字列マッチ dedup の意味レベル拡張）。
+    呼び出し側が空文字を渡せばこのセクションは省略され、後方互換性は維持される。
     """
-    return (
-        f"【テーマ】{topic_name(topic_id)}\n"
-        f"【サブトピック】{subtopic}\n"
-        f"\n"
-        f"【調査メモ】\n"
-        f"{research_memo.strip()}\n"
-    )
+    sections: list[str] = []
+    if recent_posts_block and recent_posts_block.strip():
+        sections.append(recent_posts_block.strip())
+        sections.append("")
+    sections.extend([
+        f"【テーマ】{topic_name(topic_id)}",
+        f"【サブトピック】{subtopic}",
+        "",
+        f"【調査メモ】",
+        research_memo.strip(),
+        "",
+    ])
+    return "\n".join(sections)
