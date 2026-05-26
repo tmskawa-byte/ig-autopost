@@ -2,7 +2,8 @@
 IG Auto Post — entry point.
 
 Pipeline:
-    1. Pick topic + subtopic (random)
+    1. Pick topic (rotation: state/topic_index.txt, 1〜9 ループ)
+       + subtopic (random、直近5件除外: state/recent_subtopics.json)
     2. Tavily news search (JP media only, last 365 days)
     3. Stage 1: research memo (Gemini 3.1 Pro Preview, thinking mode)
        - may return SKIP -> abort cleanly
@@ -10,16 +11,21 @@ Pipeline:
     5. Image generation (Nano Banana Pro, 1:1, 2K)
     6. Upload image to ImgBB -> public URL
     7. Post to Instagram via Graph API
+    8. State update (topic_index 進める / recent_subtopics 追記)
+       — dry_run/失敗時はスキップ。workflow が次 step で commit & push。
 
 Env vars required:
     TAVILY_API_KEY, CHATLLM_API_KEY, IMGBB_API_KEY,
     IG_ACCESS_TOKEN, IG_BUSINESS_ID
 
 CLI flags:
-    --dry-run         Do everything except the final IG publish.
-    --topic TOPIC_ID  Force a specific topic (e.g. topic_3).
+    --dry-run         Do everything except the final IG publish (state も更新しない).
+    --topic TOPIC_ID  Force a specific topic (e.g. topic_3). 順番制を bypass、
+                      topic_index は進めない（rotation の流れを乱さない）。
     --subtopic NAME   Force a specific subtopic string (must exist in topic).
+                      直近除外フィルタも bypass。
     --seed N          Deterministic random selection (for testing).
+    --preview-only    Pick topic+subtopic を表示して即終了（dry_run より浅い確認用）。
 """
 from __future__ import annotations
 
@@ -31,7 +37,7 @@ import random
 import re
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from lib.chatllm_client import ChatLLMClient, ChatLLMError
 from lib.tavily_client import TavilyClient, TavilyError
@@ -42,7 +48,6 @@ from lib.ig_publisher import IGPublisher, IGError
 from prompts.topics import (
     JP_MEDIA_DOMAINS,
     TOPICS,
-    pick_topic,
     pick_subtopic,
     build_query,
     topic_name,
@@ -64,6 +69,106 @@ IMAGE_MODEL = "nano_banana_pro"
 
 # Hard ceiling for IG caption (IG limit is 2200; we built prompt for 2100).
 CAPTION_HARD_MAX = 2200
+
+# ---------------------------------------------------------------------------
+# State files (topic rotation + subtopic dedup) — Pattern C
+# ---------------------------------------------------------------------------
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+STATE_DIR = os.path.join(_REPO_ROOT, "state")
+TOPIC_INDEX_FILE = os.path.join(STATE_DIR, "topic_index.txt")
+RECENT_SUBTOPICS_FILE = os.path.join(STATE_DIR, "recent_subtopics.json")
+
+# Subtopic dedup window: pick from candidates that haven't been used in the last N posts.
+SUBTOPIC_EXCLUDE_WINDOW = 5
+# Keep at most this many entries in recent_subtopics.json history.
+SUBTOPIC_HISTORY_KEEP = 10
+
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+def read_topic_index() -> int:
+    try:
+        with open(TOPIC_INDEX_FILE, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except FileNotFoundError:
+        LOG.warning("topic_index.txt not found; defaulting to 0")
+        return 0
+    except (ValueError, OSError) as e:
+        LOG.warning("topic_index.txt unreadable (%s); defaulting to 0", e)
+        return 0
+
+
+def write_topic_index(n: int) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(TOPIC_INDEX_FILE, "w", encoding="utf-8") as f:
+        f.write(str(n))
+
+
+def read_recent_subtopics() -> List[Dict[str, Any]]:
+    try:
+        with open(RECENT_SUBTOPICS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        hist = data.get("history", []) or []
+        if not isinstance(hist, list):
+            LOG.warning("recent_subtopics.json history not a list; resetting")
+            return []
+        return hist
+    except FileNotFoundError:
+        LOG.warning("recent_subtopics.json not found; starting empty")
+        return []
+    except (json.JSONDecodeError, OSError) as e:
+        LOG.warning("recent_subtopics.json unreadable (%s); starting empty", e)
+        return []
+
+
+def write_recent_subtopics(history: List[Dict[str, Any]]) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    trimmed = history[-SUBTOPIC_HISTORY_KEEP:]
+    with open(RECENT_SUBTOPICS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"history": trimmed}, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def rotation_topic_id(index: int) -> str:
+    """topic_1〜topic_9 を順番にループ。
+
+    TOPICS は Python 3.7+ で insertion order を保持するため、
+    list(TOPICS.keys()) は ['topic_1', ..., 'topic_9'] になる。
+    """
+    keys = list(TOPICS.keys())
+    return keys[index % len(keys)]
+
+
+def pick_subtopic_with_dedup(
+    topic_id: str,
+    history: List[Dict[str, Any]],
+    rng: random.Random,
+) -> str:
+    """直近 SUBTOPIC_EXCLUDE_WINDOW 件の subtopic を除外して random 抽選。
+
+    全候補が直近に出ていたら fallback で全候補から random。
+    """
+    candidates = list(TOPICS[topic_id]["subtopics"])
+    recent_subtopics = {
+        h.get("subtopic") for h in history[-SUBTOPIC_EXCLUDE_WINDOW:]
+        if isinstance(h, dict) and h.get("subtopic")
+    }
+    available = [s for s in candidates if s not in recent_subtopics]
+    if not available:
+        LOG.warning(
+            "All %d subtopics of %s appear in last %d history entries; "
+            "falling back to full pool.",
+            len(candidates), topic_id, SUBTOPIC_EXCLUDE_WINDOW,
+        )
+        available = candidates
+    chosen = rng.choice(available)
+    LOG.info(
+        "Subtopic pick: %r from %d available (excluded %d recent: %s)",
+        chosen, len(available), len(recent_subtopics),
+        sorted(recent_subtopics) if recent_subtopics else "[]",
+    )
+    return chosen
 
 
 # ---------------------------------------------------------------------------
@@ -131,11 +236,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Run pipeline but do NOT publish to Instagram (image is still generated + uploaded).",
+        help="Run pipeline but do NOT publish to Instagram (image is still generated + uploaded). State も更新しない。",
     )
-    p.add_argument("--topic", default=None, help="Force topic id (e.g. topic_3)")
-    p.add_argument("--subtopic", default=None, help="Force subtopic string")
+    p.add_argument("--topic", default=None, help="Force topic id (e.g. topic_3). 順番制 bypass・index は進めない。")
+    p.add_argument("--subtopic", default=None, help="Force subtopic string. 直近除外フィルタも bypass。")
     p.add_argument("--seed", type=int, default=None, help="Seed for random selection")
+    p.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="Pick topic+subtopic を表示して即終了。state は更新しない（rotation の流れを乱さない確認用）。",
+    )
     return p.parse_args()
 
 
@@ -145,18 +255,33 @@ def main() -> int:
 
     LOG.info("=== IG Auto Post start: %s ===", datetime.now(timezone.utc).isoformat())
     if args.dry_run:
-        LOG.warning("DRY RUN: IG publish step will be skipped.")
+        LOG.warning("DRY RUN: IG publish step will be skipped. State も更新しない。")
+    if args.preview_only:
+        LOG.warning("PREVIEW ONLY: topic/subtopic を表示して即終了。")
 
     rng = random.Random(args.seed) if args.seed is not None else random
 
     # ----- 1. Topic / subtopic -----
+    current_index = read_topic_index()
+    history = read_recent_subtopics()
+    LOG.info(
+        "State: topic_index=%d, recent_subtopics_history=%d entries",
+        current_index, len(history),
+    )
+
     if args.topic:
         if args.topic not in TOPICS:
             LOG.error("Unknown topic: %s (valid: %s)", args.topic, list(TOPICS.keys()))
             return 2
         topic_id = args.topic
+        topic_from_rotation = False
+        LOG.info("Topic forced via --topic; rotation index will NOT advance.")
     else:
-        topic_id, _ = pick_topic(rng)
+        topic_id = rotation_topic_id(current_index)
+        topic_from_rotation = True
+        LOG.info(
+            "Topic from rotation: index=%d -> %s", current_index, topic_id,
+        )
 
     if args.subtopic:
         if args.subtopic not in TOPICS[topic_id]["subtopics"]:
@@ -168,11 +293,16 @@ def main() -> int:
             )
             return 2
         subtopic = args.subtopic
+        LOG.info("Subtopic forced via --subtopic; dedup filter bypassed.")
     else:
-        subtopic = pick_subtopic(topic_id, rng)
+        subtopic = pick_subtopic_with_dedup(topic_id, history, rng)
 
     LOG.info("Topic: %s (%s)", topic_id, topic_name(topic_id))
     LOG.info("Subtopic: %s", subtopic)
+
+    if args.preview_only:
+        LOG.info("=== PREVIEW ONLY: exiting before Tavily search ===")
+        return 0
 
     # ----- 2. Tavily search -----
     try:
@@ -288,6 +418,7 @@ def main() -> int:
     if args.dry_run:
         LOG.warning("DRY RUN: skipping IG publish. Would post:\n--- CAPTION ---\n%s\n--- /CAPTION ---", caption)
         LOG.info("DRY RUN: image available at %s", public_url)
+        LOG.info("DRY RUN: state は更新しない（rotation 進めない）。")
         return 0
 
     try:
@@ -297,6 +428,27 @@ def main() -> int:
         LOG.error("IG publish failed: %s", e)
         return 10
     LOG.info("=== Posted successfully: post_id=%s ===", post_id)
+
+    # ----- 8. State update (only on real, successful publish) -----
+    try:
+        if topic_from_rotation:
+            write_topic_index(current_index + 1)
+            LOG.info("topic_index advanced: %d -> %d", current_index, current_index + 1)
+        else:
+            LOG.info("topic_index NOT advanced (--topic was forced).")
+        history.append({
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "topic_id": topic_id,
+            "subtopic": subtopic,
+        })
+        write_recent_subtopics(history)
+        LOG.info("recent_subtopics updated; history length=%d (kept %d).",
+                 len(history), min(len(history), SUBTOPIC_HISTORY_KEEP))
+    except OSError as e:
+        # 投稿は成功しているので終了コードは 0。state は workflow が次回見れば
+        # 古いままなので、同じ topic_index で動く（rotation が1日ズレる程度の影響）。
+        LOG.warning("State update failed AFTER successful post: %s. Post id=%s",
+                    e, post_id)
     return 0
 
 
