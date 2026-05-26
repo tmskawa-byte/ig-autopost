@@ -170,6 +170,45 @@ def pick_subtopic_with_dedup(
     )
     return chosen
 
+def format_recent_subtopics_for_prompt(
+    history: List[Dict[str, Any]],
+    window: int = SUBTOPIC_EXCLUDE_WINDOW,
+) -> str:
+    """直近 ``window`` 件の subtopic を Stage 2 プロンプト用にフォーマット。
+
+    Pattern D: subtopic 文字列マッチ dedup (Pattern C) では「自転車事故 賠償」と
+    「後遺障害 慰謝料 判例」のように字面が違っても意味が被るケースを取れない。
+    そこで AI 自身に直近投稿の subtopic 一覧を渡し、意味レベルで「これと
+    被らない角度で書け」と判断させる。
+
+    history が空 or 全エントリが無効なら空文字 (= 注入なし)。
+    """
+    recent = [
+        h for h in history[-window:]
+        if isinstance(h, dict) and h.get("subtopic")
+    ]
+    if not recent:
+        return ""
+    lines = ["## 直近の IG 投稿サブトピック（これらと内容が被らないこと）"]
+    # 新しい順に並べる方が AI にとって読みやすい
+    for entry in reversed(recent):
+        date_str = entry.get("date", "") or ""
+        try:
+            parts = date_str.split("-")
+            md = f"{int(parts[1])}/{int(parts[2])}"
+        except (ValueError, IndexError):
+            md = date_str
+        topic_id = entry.get("topic_id", "")
+        subtopic = entry.get("subtopic", "")
+        lines.append(f"- {md}: {subtopic}（{topic_id}）")
+    lines.append("")
+    lines.append(
+        "【重要】上記の subtopic と意味的に重なる内容、似た判例、同じキーワード"
+        "（例: 直近が「自転車事故 9500万」なら別の自転車事故判例も避ける）を"
+        "再掲しない。新しい角度・別の切り口で書くこと。"
+    )
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -264,10 +303,22 @@ def main() -> int:
     # ----- 1. Topic / subtopic -----
     current_index = read_topic_index()
     history = read_recent_subtopics()
+    recent_posts_block = format_recent_subtopics_for_prompt(history)
     LOG.info(
         "State: topic_index=%d, recent_subtopics_history=%d entries",
         current_index, len(history),
     )
+    if recent_posts_block:
+        injected_count = sum(
+            1 for line in recent_posts_block.splitlines() if line.startswith("- ")
+        )
+        LOG.info(
+            "Pattern D: injecting %d recent post(s) into Stage 2 prompt",
+            injected_count,
+        )
+        LOG.info("Pattern D recent_posts_block:\n%s", recent_posts_block)
+    else:
+        LOG.info("Pattern D: no recent subtopics to inject (history empty).")
 
     if args.topic:
         if args.topic not in TOPICS:
@@ -346,7 +397,12 @@ def main() -> int:
         return 0
 
     # ----- 4. Stage 2: caption + image_prompt -----
-    user_input_2 = build_stage2_user_input(research_memo, topic_id, subtopic)
+    user_input_2 = build_stage2_user_input(
+        research_memo,
+        topic_id,
+        subtopic,
+        recent_posts_block=recent_posts_block,
+    )
     try:
         LOG.info("Stage 2 (caption + image_prompt) starting...")
         stage2_raw = chatllm.chat(
