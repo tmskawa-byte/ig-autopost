@@ -15,16 +15,30 @@ on:
           - "false"
           - "true"
       topic:
-        description: "Force topic id (e.g. topic_3); leave blank for random"
+        description: "Force topic id (e.g. topic_3); leave blank for rotation"
         required: false
         default: ""
+      subtopic:
+        description: "Force subtopic (must exist in topic); leave blank for dedup pick"
+        required: false
+        default: ""
+      preview_only:
+        description: "topic+subtopic を pick して即終了（state は更新しない）"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: ig-autopost
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # state/ ファイル（topic_index.txt / recent_subtopics.json）を投稿成功後に
+  # 自動 commit & push するため write が必要。
+  contents: write
 
 jobs:
   post:
@@ -33,6 +47,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # commit & push back するために full token を持たせる（default も OK だが明示）
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # 浅い clone でも push できるが、念のため fetch-depth=0
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -46,6 +65,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run auto_post
+        id: run_post
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           CHATLLM_API_KEY: ${{ secrets.CHATLLM_API_KEY }}
@@ -58,8 +78,35 @@ jobs:
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             args="$args --dry-run"
           fi
+          if [ "${{ github.event.inputs.preview_only }}" = "true" ]; then
+            args="$args --preview-only"
+          fi
           if [ -n "${{ github.event.inputs.topic }}" ]; then
             args="$args --topic ${{ github.event.inputs.topic }}"
           fi
+          if [ -n "${{ github.event.inputs.subtopic }}" ]; then
+            args="$args --subtopic '${{ github.event.inputs.subtopic }}'"
+          fi
           echo "Running: python auto_post.py $args"
+          # shellcheck disable=SC2086
           python auto_post.py $args
+
+      - name: Commit & push state
+        # 投稿成功時のみ、かつ dry_run / preview_only ではない時のみ。
+        if: >-
+          success() &&
+          github.event.inputs.dry_run != 'true' &&
+          github.event.inputs.preview_only != 'true'
+        run: |
+          git config user.name "ig-autopost-bot"
+          git config user.email "ig-autopost-bot@users.noreply.github.com"
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git add state/
+            git commit -m "chore(state): advance rotation after post [skip ci]"
+            # rebase で他コミットとの競合を吸収（基本同時 push は無いが念のため）
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "State pushed."
+          else
+            echo "No state changes to commit."
+          fi
