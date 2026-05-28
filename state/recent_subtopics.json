@@ -1,11 +1,6 @@
 {
   "history": [
     {
-      "date": "2026-05-19",
-      "topic_id": "topic_3",
-      "subtopic": "交通事故 高額賠償 判例"
-    },
-    {
       "date": "2026-05-22",
       "topic_id": "topic_5",
       "subtopic": "ハイブリッド 新型"
@@ -49,6 +44,11 @@
       "date": "2026-05-27",
       "topic_id": "topic_4",
       "subtopic": "車載 USB-C 急速充電"
+    },
+    {
+      "date": "2026-05-28",
+      "topic_id": "topic_5",
+      "subtopic": "ホンダ 新型 SUV"
     }
   ]
 }
