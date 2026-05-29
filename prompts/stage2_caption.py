@@ -13,6 +13,11 @@ from __future__ import annotations
 from .topics import topic_name
 
 
+# A案 (2026-05-29): WR-V誤画像対策で緩和
+# image_prompt のブランド禁止を「読み取れるエンブレム/ナンバー数字」に限定し、
+# 車種名・形状・モデル特徴は image_prompt に書いてよい運用へ切り替え。
+# 背景: 2026-05-29 投稿でテキスト『ホンダ WR-V』に対し画像が Porsche Macan 風
+# プレミアム SUV になったため、車種固有シルエットを生成可能にする。
 STAGE2_SYSTEM_PROMPT = """\
 あなたは Instagram 自動車アカウント『対馬モータースサービス（@kawatms）』の
 コンテンツディレクターです。与えられた『調査メモ』を、IG 投稿1本分の
@@ -114,7 +119,7 @@ caption 内で具体的な車種・モデルに言及するときは、必ず次
      - 調査メモに記載されている URL から **直接引用**して、最も核となる
        1〜2 件を貼る（3件以上は不要）
      - メモに URL がない場合は「📰 参考: (調査メモのテーマ)」と書いて
-       URL は省略（メモにない URL を捏造するな！）
+       URL は省略（メモにない URL があれば）
 
   5) **ハッシュタグ群**
      - URL の後に空行を1つ挟んでから
@@ -169,12 +174,20 @@ with bright yellow accent). Text positioning should not cover the
 main subject (car) — place it in the sky / road / blurred background
 area.
 
-- 主題の車には特定メーカーの読み取れるエンブレム・ナンバープレートの
-  数字を含めない（ただし日本語見出しテキストは積極的に描画する）
+- **caption で言及している車種・モデルがあれば、image_prompt の主題として
+  その車種を明示的に書く**（例: "Honda WR-V compact SUV, characteristic
+  tall boxy crossover silhouette, sharp horizontal headlights, ..."）。
+  商標問題を避けるため:
+  - ❌ 読み取れるブランドエンブレム/ロゴ（H マーク等）は描かない
+  - ❌ 読み取れるナンバープレート数字は描かない
+  - ✓ 車種固有のシルエット・プロポーション・ライト形状・ボディサイズは描いてよい
+
 - 必須キーワード:
   - "photorealistic", "magazine cover quality"
   - "square 1:1 composition", "2K resolution"
-  - "no brand logos", "no readable license plate numbers"
+  - "no readable manufacturer emblem"
+  - "no readable license plate numbers"
+  - （"no brand logos" は使わない — モデル形状の手がかりまで消えるため）
 
 【自己チェック（出力前に必ず確認）】
 - 主題は **日本市場で売ってる or 関係する** ものか
@@ -203,8 +216,7 @@ def build_stage2_user_input(
     user message の冒頭に注入することで、AI 自身に「これと意味的に被らない
     角度で書け」と判断させる（subtopic 文字列マッチ dedup の意味レベル拡張）。
     呼び出し側が空文字を渡せばこのセクションは省略され、後方互換性は維持される。
-    """
-    sections: list[str] = []
+        sections: list[str] = []
     if recent_posts_block and recent_posts_block.strip():
         sections.append(recent_posts_block.strip())
         sections.append("")
