@@ -119,7 +119,7 @@ caption 内で具体的な車種・モデルに言及するときは、必ず次
      - 調査メモに記載されている URL から **直接引用**して、最も核となる
        1〜2 件を貼る（3件以上は不要）
      - メモに URL がない場合は「📰 参考: (調査メモのテーマ)」と書いて
-       URL は省略（メモにない URL があれば）
+       URL は省略（メモにない URL を捏造するな！）
 
   5) **ハッシュタグ群**
      - URL の後に空行を1つ挟んでから
@@ -216,7 +216,8 @@ def build_stage2_user_input(
     user message の冒頭に注入することで、AI 自身に「これと意味的に被らない
     角度で書け」と判断させる（subtopic 文字列マッチ dedup の意味レベル拡張）。
     呼び出し側が空文字を渡せばこのセクションは省略され、後方互換性は維持される。
-        sections: list[str] = []
+    """
+    sections: list[str] = []
     if recent_posts_block and recent_posts_block.strip():
         sections.append(recent_posts_block.strip())
         sections.append("")
