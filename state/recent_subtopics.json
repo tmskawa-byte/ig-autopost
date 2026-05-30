@@ -1,11 +1,6 @@
 {
   "history": [
     {
-      "date": "2026-05-22",
-      "topic_id": "topic_6",
-      "subtopic": "自動車保険 見直し ポイント"
-    },
-    {
       "date": "2026-05-23",
       "topic_id": "topic_3",
       "subtopic": "自転車 事故 賠償"
@@ -49,6 +44,11 @@
       "date": "2026-05-29",
       "topic_id": "topic_6",
       "subtopic": "車両保険 エコノミー 一般"
+    },
+    {
+      "date": "2026-05-30",
+      "topic_id": "topic_7",
+      "subtopic": "リコール 国交省"
     }
   ]
 }
