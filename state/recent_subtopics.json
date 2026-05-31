@@ -1,11 +1,6 @@
 {
   "history": [
     {
-      "date": "2026-05-23",
-      "topic_id": "topic_3",
-      "subtopic": "自転車 事故 賠償"
-    },
-    {
       "date": "2026-05-24",
       "topic_id": "topic_1",
       "subtopic": "全固体電池"
@@ -49,6 +44,11 @@
       "date": "2026-05-30",
       "topic_id": "topic_7",
       "subtopic": "リコール 国交省"
+    },
+    {
+      "date": "2026-05-31",
+      "topic_id": "topic_8",
+      "subtopic": "バッテリー警告灯 対処"
     }
   ]
 }
