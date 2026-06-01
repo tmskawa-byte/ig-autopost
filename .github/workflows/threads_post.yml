@@ -1,0 +1,108 @@
+name: Threads Auto Post
+
+# Schedule:
+#   2 days per week run cycle. Target days (JST): 月・火・木・土 朝 7:00
+#   JST = UTC+9, so 07:00 JST is the previous calendar day at 22:00 UTC.
+#     - 月 07:00 JST = 日 22:00 UTC  (cron day 0 = Sun)
+#     - 火 07:00 JST = 月 22:00 UTC  (cron day 1 = Mon)
+#     - 木 07:00 JST = 水 22:00 UTC  (cron day 3 = Wed)
+#     - 土 07:00 JST = 金 22:00 UTC  (cron day 5 = Fri)
+#   GitHub Actions cron is UTC and has no DST in Japan, so this is stable
+#   year-round.
+on:
+  schedule:
+    - cron: '0 22 * * 0,1,3,5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run pipeline but skip Threads publish (true/false)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      preview_only:
+        description: "Pick the article and dump it; skip caption + post"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      force_slug:
+        description: "Force-post the article with this slug (overrides dedup)"
+        required: false
+        default: ""
+
+concurrency:
+  group: threads-autopost
+  cancel-in-progress: false
+
+permissions:
+  # state/threads_posted.json を投稿成功後に自動 commit & push するため。
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run threads_post
+        id: run_post
+        env:
+          CHATLLM_API_KEY: ${{ secrets.CHATLLM_API_KEY }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          LOG_LEVEL: INFO
+        run: |
+          args=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            args="$args --dry-run"
+          fi
+          if [ "${{ github.event.inputs.preview_only }}" = "true" ]; then
+            args="$args --preview-only"
+          fi
+          if [ -n "${{ github.event.inputs.force_slug }}" ]; then
+            args="$args --force-slug ${{ github.event.inputs.force_slug }}"
+          fi
+          echo "Running: python scripts/threads_post.py $args"
+          # shellcheck disable=SC2086
+          python scripts/threads_post.py $args
+
+      - name: Commit & push state
+        if: >-
+          success() &&
+          github.event.inputs.dry_run != 'true' &&
+          github.event.inputs.preview_only != 'true'
+        run: |
+          git config user.name "threads-autopost-bot"
+          git config user.email "threads-autopost-bot@users.noreply.github.com"
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git add state/
+            git commit -m "chore(state): record threads post [skip ci]"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "State pushed."
+          else
+            echo "No state changes to commit."
+          fi
