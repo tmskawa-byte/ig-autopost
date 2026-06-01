@@ -6,9 +6,15 @@ Two-step publish (text or single-image):
     2. (poll) GET /{creation_id}?fields=status,error_message  until FINISHED
     3. POST /{user-id}/threads_publish     -> post_id
 
+Quote-repost flow (same two-step shape):
+    1. POST /{user-id}/threads  with media_type=TEXT + quote_post_id=<id>
+    2. (poll) status -> FINISHED
+    3. POST /{user-id}/threads_publish
+
 Docs:
 - https://developers.facebook.com/docs/threads
 - https://developers.facebook.com/docs/threads/posts
+- https://developers.facebook.com/docs/threads/posts/quote-posts
 - https://developers.facebook.com/docs/threads/reference/media
 
 Requires a Threads access token (long-lived, 60-day expiry) issued by Meta
@@ -156,6 +162,42 @@ class ThreadsPublisher:
         LOG.info("Created Threads TEXT container: %s", creation_id)
         return creation_id
 
+    def create_quote_container(
+        self,
+        text: str,
+        quoted_post_id: str,
+    ) -> str:
+        """
+        Create a TEXT container that quotes another Threads post.
+
+        Per Meta docs (Quote Posts): pass ``quote_post_id`` to the standard
+        /threads endpoint to attach a quoted reference to the published post.
+        We use ``media_type=TEXT`` because we want our own comment to be the
+        visible body of the quote post; the original post is rendered as an
+        attached card.
+
+        https://developers.facebook.com/docs/threads/posts/quote-posts
+
+        Returns creation_id.
+        """
+        self._validate_text(text)
+        if not quoted_post_id:
+            raise ThreadsError("quoted_post_id is required for a quote post")
+        params: Dict[str, Any] = {
+            "media_type": "TEXT",
+            "text": text,
+            "quote_post_id": str(quoted_post_id),
+        }
+        result = self._post(f"{self.user_id}/threads", params, timeout=60)
+        creation_id = result.get("id")
+        if not creation_id:
+            raise ThreadsError(f"No `id` in /threads (quote) response: {result}")
+        LOG.info(
+            "Created Threads QUOTE container: %s (quoted=%s)",
+            creation_id, quoted_post_id,
+        )
+        return creation_id
+
     def create_image_container(
         self,
         text: str,
@@ -264,6 +306,18 @@ class ThreadsPublisher:
         """Full IMAGE publish flow. Returns the post id."""
         creation_id = self.create_image_container(
             text, image_url, link_attachment=link_attachment
+        )
+        self.wait_for_container_ready(creation_id)
+        return self.publish_container(creation_id)
+
+    def create_quote_post(
+        self,
+        text: str,
+        quoted_post_id: str,
+    ) -> str:
+        """Full QUOTE publish flow. Returns the post id."""
+        creation_id = self.create_quote_container(
+            text=text, quoted_post_id=quoted_post_id
         )
         self.wait_for_container_ready(creation_id)
         return self.publish_container(creation_id)
