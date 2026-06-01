@@ -1,9 +1,11 @@
 name: IG Auto Post
 
 on:
-  schedule:
-    # 07:13 JST = 22:13 UTC (UTC has no DST in Japan; this is stable year-round)
-    - cron: '13 22 * * *'
+  # --- DISABLED 2026-06-01: blog 連動リール flow へ移行のため cron 停止 ---
+  # 再有効化する場合は schedule ブロックのコメントを外す。
+  # schedule:
+  #   # 07:13 JST = 22:13 UTC (UTC has no DST in Japan; this is stable year-round)
+  #   - cron: '13 22 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
