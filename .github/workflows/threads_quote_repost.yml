@@ -1,27 +1,28 @@
 name: Threads Quote Repost
 
 # Schedule:
-#   2x per week run cycle. Target days (JST): 火・金 17:00
-#   JST = UTC+9, so 17:00 JST = 08:00 UTC same calendar day.
-#     - 火 17:00 JST = 火 08:00 UTC  (cron day 2 = Tue)
-#     - 金 17:00 JST = 金 08:00 UTC  (cron day 5 = Fri)
-#   GitHub Actions cron is UTC and has no DST in Japan, so this is stable
-#   year-round.
+#   2x per week. Target days (JST): 火・金 17:00 = 08:00 UTC.
+#   Cron day-of-week: 2=Tue, 5=Fri. JST is UTC+9, no DST.
+#
+# Source pipeline switched from Threads /keyword_search (waiting on Meta
+# perm) to Tavily site:threads.com fan-out. The old script remains at
+#   scripts/threads_quote_repost.py
+# for when threads_keyword_search permission lands.
 on:
   schedule:
     - cron: '0 8 * * 2,5'
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Run search + LLM but skip Threads publish (true/false)"
+      preview_only:
+        description: "Tavily search only; print 3 candidates; skip LLM + publish"
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
           - "false"
           - "true"
-      preview_only:
-        description: "Search only; print the 3 candidates; skip LLM + publish"
+      dry_run:
+        description: "Search + LLM but skip Threads publish"
         required: false
         default: "false"
         type: choice
@@ -29,9 +30,9 @@ on:
           - "false"
           - "true"
       fresh_hours:
-        description: "Freshness window in hours (default 12)"
+        description: "Freshness window in hours (default 48)"
         required: false
-        default: "12"
+        default: "48"
       min_viral:
         description: "Minimum viral_score required to publish (default 5)"
         required: false
@@ -40,13 +41,30 @@ on:
         description: "Minimum brand_fit_score required to publish (default 6)"
         required: false
         default: "6"
+      resolve_mode:
+        description: "quote_post_id resolution strategy"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "shortcode"
+          - "scrape"
+      allow_news_fallback:
+        description: "If Tavily yields 0 candidates, fall back to TEXT card"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: threads-quote-repost
   cancel-in-progress: false
 
 permissions:
-  # state/threads_reposted.json を投稿成功後に自動 commit & push するため。
+  # state/threads_reposted_tavily.json を投稿成功後に自動 commit するため。
   contents: write
 
 jobs:
@@ -71,9 +89,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run threads_quote_repost
+      - name: Run threads_quote_repost_tavily
         id: run_repost
         env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           CHATLLM_API_KEY: ${{ secrets.CHATLLM_API_KEY }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
@@ -81,37 +100,52 @@ jobs:
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
           LOG_LEVEL: INFO
         run: |
+          # scheduled runs: full pipeline. dispatch runs: honour inputs.
+          preview="${{ github.event.inputs.preview_only }}"
+          dry="${{ github.event.inputs.dry_run }}"
+          fresh="${{ github.event.inputs.fresh_hours }}"
+          viral="${{ github.event.inputs.min_viral }}"
+          fit="${{ github.event.inputs.min_fit }}"
+          mode="${{ github.event.inputs.resolve_mode }}"
+          newsfb="${{ github.event.inputs.allow_news_fallback }}"
+
           args=""
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            args="$args --dry-run"
-          fi
-          if [ "${{ github.event.inputs.preview_only }}" = "true" ]; then
+          if [ "$preview" = "true" ]; then
             args="$args --preview-only"
           fi
-          if [ -n "${{ github.event.inputs.fresh_hours }}" ]; then
-            args="$args --fresh-hours ${{ github.event.inputs.fresh_hours }}"
+          if [ "$dry" = "true" ]; then
+            args="$args --dry-run"
           fi
-          if [ -n "${{ github.event.inputs.min_viral }}" ]; then
-            args="$args --min-viral ${{ github.event.inputs.min_viral }}"
+          if [ -n "$fresh" ]; then
+            args="$args --fresh-hours $fresh"
           fi
-          if [ -n "${{ github.event.inputs.min_fit }}" ]; then
-            args="$args --min-fit ${{ github.event.inputs.min_fit }}"
+          if [ -n "$viral" ]; then
+            args="$args --min-viral $viral"
           fi
-          echo "Running: python scripts/threads_quote_repost.py $args"
+          if [ -n "$fit" ]; then
+            args="$args --min-fit $fit"
+          fi
+          if [ -n "$mode" ]; then
+            args="$args --resolve-mode $mode"
+          fi
+          if [ "$newsfb" = "true" ]; then
+            args="$args --allow-news-fallback"
+          fi
+          echo "Running: python scripts/threads_quote_repost_tavily.py $args"
           # shellcheck disable=SC2086
-          python scripts/threads_quote_repost.py $args
+          python scripts/threads_quote_repost_tavily.py $args
 
       - name: Commit & push state
         if: >-
           success() &&
-          github.event.inputs.dry_run != 'true' &&
-          github.event.inputs.preview_only != 'true'
+          github.event.inputs.preview_only != 'true' &&
+          github.event.inputs.dry_run != 'true'
         run: |
           git config user.name "threads-autopost-bot"
           git config user.email "threads-autopost-bot@users.noreply.github.com"
           if [[ -n "$(git status --porcelain state/)" ]]; then
             git add state/
-            git commit -m "chore(state): record threads quote repost [skip ci]"
+            git commit -m "chore(state): record threads quote repost (tavily) [skip ci]"
             git pull --rebase origin "${GITHUB_REF_NAME}" || true
             git push origin "HEAD:${GITHUB_REF_NAME}"
             echo "State pushed."
