@@ -245,43 +245,24 @@ def publish_quote(
     comment: str,
     resolve_mode: str,
 ) -> (str, str):
-    """Resolve quote_post_id, post, return (post_id, quote_post_id_used)."""
-    try:
-        quote_post_id = resolve_quote_post_id(
-            candidate.url or candidate.shortcode,
-            prefer=resolve_mode,
-        )
-    except ThreadsIdResolveError as e:
-        raise ThreadsError(f"quote_post_id resolution failed: {e}") from e
+    """Post comment + URL as a normal TEXT post (auto-preview workaround).
 
+    Native quote (``quote_post_id``) requires Standard Access we do not
+    have. Workaround: embed the quoted URL at the end of the body so the
+    Threads client renders an auto-preview card.
+
+    ``resolve_mode`` is accepted but ignored — kept for caller compat.
+    Returns ``(post_id, marker)`` where marker is a fixed string so the
+    state log stays interpretable.
+    """
+    text = f"{comment}\n\n{candidate.url}"
     LOG.info(
-        "Resolved quote_post_id=%s (mode=%s) for shortcode=%s",
-        quote_post_id, resolve_mode, candidate.shortcode,
+        "Posting as TEXT with URL in body (quote workaround). url=%s",
+        candidate.url,
     )
     pub = ThreadsPublisher()
-    try:
-        post_id = pub.create_quote_post(text=comment, quoted_post_id=quote_post_id)
-    except ThreadsError as e:
-        # If we used the scraped numeric id and it failed, try one more time
-        # with the raw shortcode (Option A fallback). Only when caller
-        # explicitly used "auto".
-        if resolve_mode == "auto" and quote_post_id != candidate.shortcode:
-            LOG.warning(
-                "Quote post with scraped media_id %s failed: %s. "
-                "Falling back to raw shortcode.", quote_post_id, e,
-            )
-            try:
-                post_id = pub.create_quote_post(
-                    text=comment, quoted_post_id=candidate.shortcode,
-                )
-                quote_post_id = candidate.shortcode
-            except ThreadsError as e2:
-                raise ThreadsError(
-                    f"both scraped media_id and shortcode rejected: {e2}"
-                ) from e2
-        else:
-            raise
-    return post_id, quote_post_id
+    post_id = pub.create_text_post(text=text)
+    return post_id, "(url-in-body)"
 
 
 # ---------------------------------------------------------------------------
