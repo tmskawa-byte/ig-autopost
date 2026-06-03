@@ -1,0 +1,108 @@
+name: Threads Trivia Post
+
+# Schedule:
+#   5x per week. Target days (JST): 火・水・金・土・日 朝 7:00
+#   JST = UTC+9, so 07:00 JST is the previous calendar day at 22:00 UTC.
+#     - 火 07:00 JST = 月 22:00 UTC  (cron day 1 = Mon)
+#     - 水 07:00 JST = 火 22:00 UTC  (cron day 2 = Tue)
+#     - 金 07:00 JST = 木 22:00 UTC  (cron day 4 = Thu)
+#     - 土 07:00 JST = 金 22:00 UTC  (cron day 5 = Fri)
+#     - 日 07:00 JST = 土 22:00 UTC  (cron day 6 = Sat)
+#   GitHub Actions cron is UTC, no DST in Japan; stable year-round.
+on:
+  schedule:
+    - cron: '0 22 * * 1,2,4,5,6'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run pipeline but skip Threads publish (true/false)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      preview_only:
+        description: "Generate trivia and dump JSON; skip publish + state (default true for manual run)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      max_attempts:
+        description: "Max generation attempts on validation failure"
+        required: false
+        default: "4"
+
+concurrency:
+  group: threads-trivia
+  cancel-in-progress: false
+
+permissions:
+  # state/threads_trivia_topics.json を投稿成功後に自動 commit & push するため。
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run threads_trivia
+        id: run_trivia
+        env:
+          CHATLLM_API_KEY: ${{ secrets.CHATLLM_API_KEY }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          LOG_LEVEL: INFO
+        run: |
+          args=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            args="$args --dry-run"
+          fi
+          if [ "${{ github.event.inputs.preview_only }}" = "true" ]; then
+            args="$args --preview-only"
+          fi
+          if [ -n "${{ github.event.inputs.max_attempts }}" ]; then
+            args="$args --max-attempts ${{ github.event.inputs.max_attempts }}"
+          fi
+          echo "Running: python scripts/threads_trivia.py $args"
+          # shellcheck disable=SC2086
+          python scripts/threads_trivia.py $args
+
+      - name: Commit & push state
+        if: >-
+          success() &&
+          github.event.inputs.dry_run != 'true' &&
+          github.event.inputs.preview_only != 'true'
+        run: |
+          git config user.name "threads-trivia-bot"
+          git config user.email "threads-trivia-bot@users.noreply.github.com"
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git add state/
+            git commit -m "chore(state): record threads trivia post [skip ci]"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "State pushed."
+          else
+            echo "No state changes to commit."
+          fi
