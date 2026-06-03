@@ -9,8 +9,6 @@ name: Threads Quote Repost
 #   scripts/threads_quote_repost.py
 # for when threads_keyword_search permission lands.
 on:
-  schedule:
-    - cron: '0 8 * * 2,5'
   workflow_dispatch:
     inputs:
       preview_only:
