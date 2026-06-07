@@ -10,8 +10,6 @@ name: Threads Trivia Post
 #     - 日 07:00 JST = 土 22:00 UTC  (cron day 6 = Sat)
 #   GitHub Actions cron is UTC, no DST in Japan; stable year-round.
 on:
-  schedule:
-    - cron: '0 22 * * 1,2,4,5,6'
   workflow_dispatch:
     inputs:
       dry_run:
