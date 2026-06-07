@@ -1,15 +1,14 @@
 name: Threads Auto Post
 
 # Schedule:
-#   2x per week run cycle. Target days (JST): 月・木 朝 7:00
+#   Daily run cycle. Target time (JST): 毎日 朝 7:00
 #   JST = UTC+9, so 07:00 JST is the previous calendar day at 22:00 UTC.
-#     - 月 07:00 JST = 日 22:00 UTC  (cron day 0 = Sun)
-#     - 木 07:00 JST = 水 22:00 UTC  (cron day 3 = Wed)
+#     - 毎日 07:00 JST = 毎日 22:00 UTC  (cron day field = * = all days)
 #   GitHub Actions cron is UTC and has no DST in Japan, so this is stable
 #   year-round.
 on:
   schedule:
-    - cron: '0 22 * * 0,3'
+    - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
