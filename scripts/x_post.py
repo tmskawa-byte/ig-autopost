@@ -167,10 +167,30 @@ def pick_article(
         LOG.error("--force-slug %r not found in feed", force_slug)
         return None
 
-    for a in articles:
+    if len(articles) < 2:
+        LOG.warning(
+            "Only %d article(s) in feed; skipping X post because the latest "
+            "article is reserved for Threads.",
+            len(articles),
+        )
+        return None
+
+    latest = articles[0]
+    LOG.info(
+        "Skipping latest article for Threads: title=%r slug=%s link=%s",
+        latest.title,
+        latest.slug,
+        latest.link,
+    )
+
+    for a in articles[1:]:
         if not already_posted(state, a):
             return a
-    LOG.info("All %d feed articles are already posted.", len(articles))
+    LOG.warning(
+        "No X candidate found after skipping the latest article; all %d older "
+        "feed article(s) are already posted.",
+        max(0, len(articles) - 1),
+    )
     return None
 
 
