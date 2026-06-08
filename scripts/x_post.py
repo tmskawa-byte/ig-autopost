@@ -7,8 +7,8 @@ pipeline is left untouched; this one mirrors its structure but posts to X.
 
 Flow:
     1. Fetch latest articles from tsushima-motor.com RSS
-    2. Filter out articles already posted (state/x_posted.json)
-    3. Pick the newest unposted article
+    2. Filter out articles already posted (state/x_posted.json) or by Threads
+    3. Pick the newest unposted article after reserving the latest for Threads
     4. Generate a Japanese "整備士目線" excerpt (X-sized) via ChatLLM
     5. Post a text tweet (caption + article URL) via the X API v2 (OAuth 1.0a)
     6. Update state/x_posted.json
@@ -58,6 +58,7 @@ from lib.x_publisher import XError, XPublisher, weighted_len  # noqa: E402
 LOG = logging.getLogger("x_post")
 
 STATE_PATH = REPO_ROOT / "state" / "x_posted.json"
+THREADS_STATE_PATH = REPO_ROOT / "state" / "threads_posted.json"
 STATE_MAX_ENTRIES = 200  # keep recent history bounded
 DEFAULT_RSS_URL = os.environ.get(
     "BLOG_RSS_URL", "https://tsushima-motor.com/rss.xml"
@@ -111,11 +112,11 @@ def setup_logging() -> None:
 # ---------------------------------------------------------------------------
 # state
 # ---------------------------------------------------------------------------
-def load_state() -> dict:
-    if not STATE_PATH.exists():
+def load_state(path: Path = STATE_PATH) -> dict:
+    if not path.exists():
         return {"posted": []}
     try:
-        with STATE_PATH.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         LOG.warning("State unreadable, treating as empty: %s", e)
@@ -158,6 +159,7 @@ def already_posted(state: dict, article: Article) -> bool:
 def pick_article(
     articles: List[Article],
     state: dict,
+    threads_state: Optional[dict] = None,
     force_slug: Optional[str] = None,
 ) -> Optional[Article]:
     if force_slug:
@@ -183,12 +185,22 @@ def pick_article(
         latest.link,
     )
 
+    threads_state = threads_state or {"posted": []}
     for a in articles[1:]:
-        if not already_posted(state, a):
-            return a
+        if already_posted(state, a):
+            continue
+        if already_posted(threads_state, a):
+            LOG.info(
+                "Skipping article already posted to Threads: title=%r slug=%s link=%s",
+                a.title,
+                a.slug,
+                a.link,
+            )
+            continue
+        return a
     LOG.warning(
         "No X candidate found after skipping the latest article; all %d older "
-        "feed article(s) are already posted.",
+        "feed article(s) are already posted to X or Threads.",
         max(0, len(articles) - 1),
     )
     return None
@@ -326,7 +338,13 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     state = load_state()
-    article = pick_article(articles, state, force_slug=args.force_slug)
+    threads_state = load_state(THREADS_STATE_PATH)
+    article = pick_article(
+        articles,
+        state,
+        threads_state=threads_state,
+        force_slug=args.force_slug,
+    )
     if article is None:
         LOG.info("Nothing to post. Exiting cleanly.")
         return 0
