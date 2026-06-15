@@ -7,8 +7,8 @@ pipeline is left untouched; this one mirrors its structure but posts to X.
 
 Flow:
     1. Fetch latest articles from tsushima-motor.com RSS
-    2. Filter out articles already posted (state/x_posted.json) or by Threads
-    3. Pick the newest unposted article after reserving the latest for Threads
+    2. Filter out articles already posted to X (state/x_posted.json)
+    3. Pick the newest unposted article
     4. Generate a Japanese "整備士目線" excerpt (X-sized) via ChatLLM
     5. Post a text tweet (caption + article URL) via the X API v2 (OAuth 1.0a)
     6. Update state/x_posted.json
@@ -58,7 +58,6 @@ from lib.x_publisher import XError, XPublisher, weighted_len  # noqa: E402
 LOG = logging.getLogger("x_post")
 
 STATE_PATH = REPO_ROOT / "state" / "x_posted.json"
-THREADS_STATE_PATH = REPO_ROOT / "state" / "threads_posted.json"
 STATE_MAX_ENTRIES = 200  # keep recent history bounded
 DEFAULT_RSS_URL = os.environ.get(
     "BLOG_RSS_URL", "https://tsushima-motor.com/rss.xml"
@@ -159,7 +158,6 @@ def already_posted(state: dict, article: Article) -> bool:
 def pick_article(
     articles: List[Article],
     state: dict,
-    threads_state: Optional[dict] = None,
     force_slug: Optional[str] = None,
 ) -> Optional[Article]:
     if force_slug:
@@ -169,40 +167,11 @@ def pick_article(
         LOG.error("--force-slug %r not found in feed", force_slug)
         return None
 
-    if len(articles) < 2:
-        LOG.warning(
-            "Only %d article(s) in feed; skipping X post because the latest "
-            "article is reserved for Threads.",
-            len(articles),
-        )
-        return None
-
-    latest = articles[0]
-    LOG.info(
-        "Skipping latest article for Threads: title=%r slug=%s link=%s",
-        latest.title,
-        latest.slug,
-        latest.link,
-    )
-
-    threads_state = threads_state or {"posted": []}
-    for a in articles[1:]:
+    for a in articles:
         if already_posted(state, a):
             continue
-        if already_posted(threads_state, a):
-            LOG.info(
-                "Skipping article already posted to Threads: title=%r slug=%s link=%s",
-                a.title,
-                a.slug,
-                a.link,
-            )
-            continue
         return a
-    LOG.warning(
-        "No X candidate found after skipping the latest article; all %d older "
-        "feed article(s) are already posted to X or Threads.",
-        max(0, len(articles) - 1),
-    )
+    LOG.info("All %d feed articles are already posted to X.", len(articles))
     return None
 
 
@@ -338,11 +307,9 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     state = load_state()
-    threads_state = load_state(THREADS_STATE_PATH)
     article = pick_article(
         articles,
         state,
-        threads_state=threads_state,
         force_slug=args.force_slug,
     )
     if article is None:
