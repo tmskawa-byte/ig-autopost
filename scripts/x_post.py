@@ -7,8 +7,8 @@ pipeline is left untouched; this one mirrors its structure but posts to X.
 
 Flow:
     1. Fetch latest articles from tsushima-motor.com RSS
-    2. Filter out articles already posted to X (state/x_posted.json)
-    3. Pick the newest unposted article
+    2. Reserve the latest article for Threads
+    3. Pick the newest remaining article not posted to X yet
     4. Generate a Japanese "整備士目線" excerpt (X-sized) via ChatLLM
     5. Post a text tweet (caption + article URL) via the X API v2 (OAuth 1.0a)
     6. Update state/x_posted.json
@@ -167,11 +167,31 @@ def pick_article(
         LOG.error("--force-slug %r not found in feed", force_slug)
         return None
 
-    for a in articles:
+    if len(articles) < 2:
+        LOG.warning(
+            "Only %d article(s) in feed; skipping X post because the latest "
+            "article is reserved for Threads.",
+            len(articles),
+        )
+        return None
+
+    latest = articles[0]
+    LOG.info(
+        "Reserving latest article for Threads: title=%r slug=%s link=%s",
+        latest.title,
+        latest.slug,
+        latest.link,
+    )
+
+    for a in articles[1:]:
         if already_posted(state, a):
             continue
         return a
-    LOG.info("All %d feed articles are already posted to X.", len(articles))
+    LOG.info(
+        "No X candidate found after reserving the latest article; all %d older "
+        "feed article(s) are already posted to X.",
+        max(0, len(articles) - 1),
+    )
     return None
 
 
