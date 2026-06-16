@@ -40,8 +40,10 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -58,6 +60,7 @@ from lib.x_publisher import XError, XPublisher, weighted_len  # noqa: E402
 LOG = logging.getLogger("x_post")
 
 STATE_PATH = REPO_ROOT / "state" / "x_posted.json"
+THREADS_STATE_PATH = REPO_ROOT / "state" / "threads_posted.json"
 STATE_MAX_ENTRIES = 200  # keep recent history bounded
 DEFAULT_RSS_URL = os.environ.get(
     "BLOG_RSS_URL", "https://tsushima-motor.com/rss.xml"
@@ -152,13 +155,50 @@ def already_posted(state: dict, article: Article) -> bool:
     return key == ""  # treat empty-key items as "already handled" to skip them
 
 
+def _parse_iso_datetime(raw: str) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def last_posted_at(state: dict, article: Article) -> Optional[datetime]:
+    latest: Optional[datetime] = None
+    for entry in state.get("posted", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("slug") != article.slug and entry.get("link") != article.link:
+            continue
+        posted_at = _parse_iso_datetime(str(entry.get("posted_at") or ""))
+        if posted_at and (latest is None or posted_at > latest):
+            latest = posted_at
+    return latest
+
+
+def recently_posted(state: dict, article: Article, cooldown_days: int) -> bool:
+    posted_at = last_posted_at(state, article)
+    if posted_at is None:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, cooldown_days))
+    return posted_at >= cutoff
+
+
 # ---------------------------------------------------------------------------
 # article selection
 # ---------------------------------------------------------------------------
 def pick_article(
     articles: List[Article],
     state: dict,
+    avoid_state: Optional[dict] = None,
     force_slug: Optional[str] = None,
+    random_pick: bool = False,
+    cooldown_days: int = 30,
+    seed: Optional[int] = None,
 ) -> Optional[Article]:
     if force_slug:
         for a in articles:
@@ -183,8 +223,45 @@ def pick_article(
         latest.link,
     )
 
-    for a in articles[1:]:
+    candidates = articles[1:]
+
+    if random_pick:
+        rng = random.Random(seed) if seed is not None else random
+        avoid_state = avoid_state or {"posted": []}
+        eligible = [
+            a
+            for a in candidates
+            if not recently_posted(state, a, cooldown_days)
+            and not recently_posted(avoid_state, a, cooldown_days)
+        ]
+        avoid_safe_pool = [
+            a for a in candidates if not recently_posted(avoid_state, a, cooldown_days)
+        ]
+        pool = eligible or avoid_safe_pool or list(candidates)
+        if not eligible:
+            LOG.warning(
+                "No older article outside the %d-day X/Threads cooldown; falling back to %d older feed articles.",
+                cooldown_days,
+                len(pool),
+            )
+        if not pool:
+            return None
+        article = rng.choice(pool)
+        LOG.info(
+            "Random selected article: title=%r slug=%s cooldown_days=%d eligible=%d older_total=%d",
+            article.title,
+            article.slug,
+            cooldown_days,
+            len(eligible),
+            len(candidates),
+        )
+        return article
+
+    avoid_state = avoid_state or {"posted": []}
+    for a in candidates:
         if already_posted(state, a):
+            continue
+        if recently_posted(avoid_state, a, cooldown_days):
             continue
         return a
     LOG.info(
@@ -326,6 +403,29 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=DEFAULT_RSS_URL,
         help=f"RSS feed URL (default: {DEFAULT_RSS_URL})",
     )
+    p.add_argument(
+        "--random",
+        action="store_true",
+        help="pick a random older article, avoiding recent repeats by cooldown",
+    )
+    p.add_argument(
+        "--cooldown-days",
+        type=int,
+        default=int(os.environ.get("BLOG_CLIP_COOLDOWN_DAYS", "30")),
+        help="days before the same article can be randomly clipped again",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="deterministic random seed for testing",
+    )
+    p.add_argument(
+        "--caption-mode",
+        choices=("template", "llm"),
+        default=os.environ.get("SOCIAL_CAPTION_MODE", "template"),
+        help="template avoids LLM credits; llm uses ChatLLM with template fallback on credit exhaustion",
+    )
     return p.parse_args(argv)
 
 
@@ -342,10 +442,15 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     state = load_state()
+    threads_state = load_state(THREADS_STATE_PATH)
     article = pick_article(
         articles,
         state,
+        avoid_state=threads_state,
         force_slug=args.force_slug,
+        random_pick=args.random,
+        cooldown_days=args.cooldown_days,
+        seed=args.seed,
     )
     if article is None:
         LOG.info("Nothing to post. Exiting cleanly.")
@@ -360,23 +465,27 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(article.to_dict(), ensure_ascii=False, indent=2))
         return 0
 
-    try:
-        chat = ChatLLMClient()
-    except ChatLLMError as e:
-        LOG.error("ChatLLM init failed: %s", e)
-        return 2
-
-    try:
-        caption = generate_caption(chat, article)
-    except ChatLLMError as e:
-        if not is_credit_exhausted_error(e):
-            LOG.error("Caption generation failed: %s", e)
-            return 2
-        LOG.warning(
-            "ChatLLM credits exhausted; using deterministic fallback caption: %s",
-            e,
-        )
+    if args.caption_mode == "template":
+        LOG.info("Using deterministic template caption.")
         caption = generate_fallback_caption(article)
+    else:
+        try:
+            chat = ChatLLMClient()
+        except ChatLLMError as e:
+            LOG.error("ChatLLM init failed: %s", e)
+            return 2
+
+        try:
+            caption = generate_caption(chat, article)
+        except ChatLLMError as e:
+            if not is_credit_exhausted_error(e):
+                LOG.error("Caption generation failed: %s", e)
+                return 2
+            LOG.warning(
+                "ChatLLM credits exhausted; using deterministic fallback caption: %s",
+                e,
+            )
+            caption = generate_fallback_caption(article)
 
     final_text = build_final_text(caption, article.link)
     LOG.info(

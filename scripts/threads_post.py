@@ -34,10 +34,12 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 # Allow running both as `python scripts/threads_post.py` from repo root and
 # as `python -m scripts.threads_post`.
@@ -146,6 +148,39 @@ def already_posted(state: dict, article: Article) -> bool:
     return key == ""  # treat empty-key items as "already handled" to skip them
 
 
+def _parse_iso_datetime(raw: str) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def last_posted_at(state: dict, article: Article) -> Optional[datetime]:
+    latest: Optional[datetime] = None
+    for entry in state.get("posted", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("slug") != article.slug and entry.get("link") != article.link:
+            continue
+        posted_at = _parse_iso_datetime(str(entry.get("posted_at") or ""))
+        if posted_at and (latest is None or posted_at > latest):
+            latest = posted_at
+    return latest
+
+
+def recently_posted(state: dict, article: Article, cooldown_days: int) -> bool:
+    posted_at = last_posted_at(state, article)
+    if posted_at is None:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, cooldown_days))
+    return posted_at >= cutoff
+
+
 # ---------------------------------------------------------------------------
 # article selection
 # ---------------------------------------------------------------------------
@@ -153,6 +188,9 @@ def pick_article(
     articles: List[Article],
     state: dict,
     force_slug: Optional[str] = None,
+    random_pick: bool = False,
+    cooldown_days: int = 30,
+    seed: Optional[int] = None,
 ) -> Optional[Article]:
     if force_slug:
         for a in articles:
@@ -160,6 +198,29 @@ def pick_article(
                 return a
         LOG.error("--force-slug %r not found in feed", force_slug)
         return None
+
+    if random_pick:
+        rng = random.Random(seed) if seed is not None else random
+        eligible = [a for a in articles if not recently_posted(state, a, cooldown_days)]
+        pool = eligible or list(articles)
+        if not eligible:
+            LOG.warning(
+                "No article outside the %d-day cooldown; falling back to all %d feed articles.",
+                cooldown_days,
+                len(pool),
+            )
+        if not pool:
+            return None
+        article = rng.choice(pool)
+        LOG.info(
+            "Random selected article: title=%r slug=%s cooldown_days=%d eligible=%d total=%d",
+            article.title,
+            article.slug,
+            cooldown_days,
+            len(eligible),
+            len(articles),
+        )
+        return article
 
     for a in articles:
         if not already_posted(state, a):
@@ -296,6 +357,29 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=DEFAULT_RSS_URL,
         help=f"RSS feed URL (default: {DEFAULT_RSS_URL})",
     )
+    p.add_argument(
+        "--random",
+        action="store_true",
+        help="pick a random article, avoiding recent repeats by cooldown",
+    )
+    p.add_argument(
+        "--cooldown-days",
+        type=int,
+        default=int(os.environ.get("BLOG_CLIP_COOLDOWN_DAYS", "30")),
+        help="days before the same article can be randomly clipped again",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="deterministic random seed for testing",
+    )
+    p.add_argument(
+        "--caption-mode",
+        choices=("template", "llm"),
+        default=os.environ.get("SOCIAL_CAPTION_MODE", "template"),
+        help="template avoids LLM credits; llm uses ChatLLM with template fallback on credit exhaustion",
+    )
     return p.parse_args(argv)
 
 
@@ -312,7 +396,14 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     state = load_state()
-    article = pick_article(articles, state, force_slug=args.force_slug)
+    article = pick_article(
+        articles,
+        state,
+        force_slug=args.force_slug,
+        random_pick=args.random,
+        cooldown_days=args.cooldown_days,
+        seed=args.seed,
+    )
     if article is None:
         LOG.info("Nothing to post. Exiting cleanly.")
         return 0
@@ -326,23 +417,27 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(article.to_dict(), ensure_ascii=False, indent=2))
         return 0
 
-    try:
-        chat = ChatLLMClient()
-    except ChatLLMError as e:
-        LOG.error("ChatLLM init failed: %s", e)
-        return 2
-
-    try:
-        caption = generate_caption(chat, article)
-    except ChatLLMError as e:
-        if not is_credit_exhausted_error(e):
-            LOG.error("Caption generation failed: %s", e)
-            return 2
-        LOG.warning(
-            "ChatLLM credits exhausted; using deterministic fallback caption: %s",
-            e,
-        )
+    if args.caption_mode == "template":
+        LOG.info("Using deterministic template caption.")
         caption = generate_fallback_caption(article)
+    else:
+        try:
+            chat = ChatLLMClient()
+        except ChatLLMError as e:
+            LOG.error("ChatLLM init failed: %s", e)
+            return 2
+
+        try:
+            caption = generate_caption(chat, article)
+        except ChatLLMError as e:
+            if not is_credit_exhausted_error(e):
+                LOG.error("Caption generation failed: %s", e)
+                return 2
+            LOG.warning(
+                "ChatLLM credits exhausted; using deterministic fallback caption: %s",
+                e,
+            )
+            caption = generate_fallback_caption(article)
 
     final_text = build_final_text(caption, article.link)
     LOG.info("Final text (%d chars):\n%s", len(final_text), final_text)
