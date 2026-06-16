@@ -211,6 +211,21 @@ def generate_caption(client: ChatLLMClient, article: Article) -> str:
     return _clean_caption(raw)
 
 
+def is_credit_exhausted_error(error: ChatLLMError) -> bool:
+    text = str(error).lower()
+    return "no remaining credits" in text or "remaining credits" in text
+
+
+def generate_fallback_caption(article: Article) -> str:
+    title = article.title or "ブログを更新しました"
+    caption = (
+        f"ブログ更新：{title}\n"
+        "整備士目線でポイントを整理しました。\n"
+        "#対馬モーターサービス"
+    )
+    return caption
+
+
 def _clean_caption(raw: str) -> str:
     text = (raw or "").strip()
     # Strip enclosing code fences if model added them.
@@ -354,8 +369,14 @@ def run(args: argparse.Namespace) -> int:
     try:
         caption = generate_caption(chat, article)
     except ChatLLMError as e:
-        LOG.error("Caption generation failed: %s", e)
-        return 2
+        if not is_credit_exhausted_error(e):
+            LOG.error("Caption generation failed: %s", e)
+            return 2
+        LOG.warning(
+            "ChatLLM credits exhausted; using deterministic fallback caption: %s",
+            e,
+        )
+        caption = generate_fallback_caption(article)
 
     final_text = build_final_text(caption, article.link)
     LOG.info(
