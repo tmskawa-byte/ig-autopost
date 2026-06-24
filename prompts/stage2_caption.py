@@ -13,6 +13,11 @@ from __future__ import annotations
 from .topics import topic_name
 
 
+# A案 (2026-05-29): WR-V誤画像対策で緩和
+# image_prompt のブランド禁止を「読み取れるエンブレム/ナンバー数字」に限定し、
+# 車種名・形状・モデル特徴は image_prompt に書いてよい運用へ切り替え。
+# 背景: 2026-05-29 投稿でテキスト『ホンダ WR-V』に対し画像が Porsche Macan 風
+# プレミアム SUV になったため、車種固有シルエットを生成可能にする。
 STAGE2_SYSTEM_PROMPT = """\
 あなたは Instagram 自動車アカウント『対馬モータースサービス（@kawatms）』の
 コンテンツディレクターです。与えられた『調査メモ』を、IG 投稿1本分の
@@ -169,12 +174,20 @@ with bright yellow accent). Text positioning should not cover the
 main subject (car) — place it in the sky / road / blurred background
 area.
 
-- 主題の車には特定メーカーの読み取れるエンブレム・ナンバープレートの
-  数字を含めない（ただし日本語見出しテキストは積極的に描画する）
+- **caption で言及している車種・モデルがあれば、image_prompt の主題として
+  その車種を明示的に書く**（例: "Honda WR-V compact SUV, characteristic
+  tall boxy crossover silhouette, sharp horizontal headlights, ..."）。
+  商標問題を避けるため:
+  - ❌ 読み取れるブランドエンブレム/ロゴ（H マーク等）は描かない
+  - ❌ 読み取れるナンバープレート数字は描かない
+  - ✓ 車種固有のシルエット・プロポーション・ライト形状・ボディサイズは描いてよい
+
 - 必須キーワード:
   - "photorealistic", "magazine cover quality"
   - "square 1:1 composition", "2K resolution"
-  - "no brand logos", "no readable license plate numbers"
+  - "no readable manufacturer emblem"
+  - "no readable license plate numbers"
+  - （"no brand logos" は使わない — モデル形状の手がかりまで消えるため）
 
 【自己チェック（出力前に必ず確認）】
 - 主題は **日本市場で売ってる or 関係する** ものか
