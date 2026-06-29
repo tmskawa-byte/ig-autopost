@@ -1,14 +1,14 @@
 name: X Post
 
 # Schedule:
-#   Daily run cycle. Target time (JST): 毎日 朝 7:00 (Threads と同タイミング)
-#   JST = UTC+9, so 07:00 JST is the previous calendar day at 22:00 UTC.
-#     - 毎日 07:00 JST = 毎日 22:00 UTC  (cron day field = * = all days)
+#   Daily random blog clip. Target time (JST): every day 07:10.
+#   X runs after Threads and avoids articles recently posted there.
+#   JST = UTC+9, so 07:10 JST is the previous calendar day at 22:10 UTC.
 #   GitHub Actions cron is UTC and has no DST in Japan, so this is stable
 #   year-round.
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '10 22 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -31,6 +31,26 @@ on:
         description: "Force-post the article with this slug (overrides dedup)"
         required: false
         default: ""
+      random:
+        description: "Pick a random older article instead of newest unposted"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      cooldown_days:
+        description: "Days before the same article can be randomly clipped again"
+        required: false
+        default: "30"
+      caption_mode:
+        description: "template avoids LLM credits; llm uses ChatLLM"
+        required: false
+        default: "template"
+        type: choice
+        options:
+          - "template"
+          - "llm"
 
 concurrency:
   group: x-autopost
@@ -71,8 +91,16 @@ jobs:
           KAWATMS_X_ACCESS_TOKEN: ${{ secrets.KAWATMS_X_ACCESS_TOKEN }}
           KAWATMS_X_ACCESS_TOKEN_SECRET: ${{ secrets.KAWATMS_X_ACCESS_TOKEN_SECRET }}
           LOG_LEVEL: INFO
+          RANDOM_PICK: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.random }}
+          COOLDOWN_DAYS: ${{ github.event.inputs.cooldown_days || '30' }}
+          CAPTION_MODE: ${{ github.event.inputs.caption_mode || 'template' }}
         run: |
           args=""
+          if [ "$RANDOM_PICK" = "true" ]; then
+            args="$args --random"
+          fi
+          args="$args --cooldown-days $COOLDOWN_DAYS"
+          args="$args --caption-mode $CAPTION_MODE"
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             args="$args --dry-run"
           fi
