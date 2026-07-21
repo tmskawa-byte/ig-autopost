@@ -256,8 +256,7 @@ def generate_fallback_caption(article: Article) -> str:
         description = description[:119].rstrip() + "…"
 
     parts = [
-        "ブログを更新しました。",
-        article.title or "新しい記事を公開しました。",
+        article.title or "整備士目線の新しい記事",
     ]
     if description:
         parts.append(description)
