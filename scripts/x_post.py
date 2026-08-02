@@ -294,9 +294,9 @@ def is_credit_exhausted_error(error: ChatLLMError) -> bool:
 
 
 def generate_fallback_caption(article: Article) -> str:
-    title = article.title or "ブログを更新しました"
+    title = article.title or "整備士目線の新しい記事"
     caption = (
-        f"ブログ更新：{title}\n"
+        f"{title}\n"
         "整備士目線でポイントを整理しました。\n"
         "#対馬モーターサービス"
     )
